@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/ash
 
 # Directories
 cur=$(pwd)
@@ -6,9 +6,19 @@ tmp=$(mktemp -d)
 scriptName=$(basename "$0")
 
 # Certificate Variables
-OUTPATH="./"
-VERBOSE=0
-DURATION=3650 # 10 years
+OUTPATH="./data"
+VERBOSE=${VERBOSE:=1}
+DURATION=${DURATION:=1095} # 3 years
+C=$COUNTRY
+ST=$STATE
+L=$LOCALITY
+O=$ORGANIZATION
+OU=$UNIT
+CN=${COMMON_NAME:=localhost}
+IP_V6=${IP_V6:=::1}
+IP_V4=${IP_V4:=127.0.0.1}
+emailAddress=$EMAIL_ADDRESS
+SIZE=${SIZE:=2048}
 
 safeExit() {
   if [ -d "$tmp" ]; then
@@ -52,25 +62,10 @@ testPath() {
 }
 
 # Process Arguments
-while [ "$1" != "" ]; do
-  PARAM=$(echo "$1" | awk -F= '{print $1}')
-  VALUE=$(echo "$1" | awk -F= '{print $2}')
-  case $PARAM in
-    -h|--help) help; safeExit ;;
-    -c|--country) C=$VALUE ;;
-    -s|--state) ST=$VALUE ;;
-    -l|--locality) L=$VALUE ;;
-    -o|--organization) O=$VALUE ;;
-    -u|--unit) OU=$VALUE ;;
-    -n|--common-name) CN=$VALUE ;;
-    -e|--email) emailAddress=$VALUE ;;
-    -p|--path) OUTPATH=$VALUE; testPath ;;
-	-d|--duration) DURATION=$VALUE ;;
-    -v|--verbose) VERBOSE=1 ;;
-    *) echo "ERROR: unknown parameter \"$PARAM\""; help; exit 1 ;;
-  esac
-  shift
-done
+if [ "$1" == "help" ]; then
+  help;
+  exit 0;
+fi
 
 # Prompt for variables that were not provided in arguments
 checkVariables() {
@@ -147,11 +142,10 @@ cleanup() {
 buildCsrCnf() {
 cat << EOF > "${tmp}/tmp.csr.cnf"
 [req]
-default_bits = 2048
+default_bits = ${SIZE}
 prompt = no
 default_md = sha256
 distinguished_name = dn
-
 [dn]
 C=${C}
 ST=${ST}
@@ -160,18 +154,12 @@ O=${O}
 OU=${OU}
 CN=${CN}
 emailAddress=${emailAddress}
-EOF
-}
-
-buildExtCnf() {
-cat << EOF > "${tmp}/v3.ext"
-authorityKeyIdentifier=keyid,issuer
-basicConstraints=CA:FALSE
-keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+[req_ext]
 subjectAltName = @alt_names
-
 [alt_names]
 DNS.1 = ${CN}
+IP.1 = ${IP_V6}
+IP.2 = ${IP_V4}
 EOF
 }
 
@@ -180,20 +168,22 @@ build() {
   # Santizie domain name for file name
   FILENAME=${CN/\*\./}
   # Generate CA key & crt
-  openssl genrsa -out "${tmp}/tmp.key" 2048
-  openssl req -x509 -new -nodes -key "${tmp}/tmp.key" -sha256 -days "${DURATION}" -out "${OUTPATH}${FILENAME}_CA.pem" -subj "/C=${C}/ST=${ST}/L=${L}/O=${O}/OU=${OU}/CN=${CN}/emailAddress=${emailAddress}"
+  openssl genrsa -out "${tmp}/tmp.key" ${SIZE}
+  openssl req -x509 -new -nodes -key "${tmp}/tmp.key" -sha256 -days "${DURATION}" -out "${OUTPATH}/${FILENAME}_CA.cert" -subj "/C=${C}/ST=${ST}/L=${L}/O=${O}/OU=${OU}/CN=${CN}/emailAddress=${emailAddress}"
+
+  openssl genrsa -out "${OUTPATH}/${FILENAME}.key" ${SIZE}
 
   # CSR Configuration
   buildCsrCnf
 
-  # Create v3.ext configuration file
-  buildExtCnf
-
   # Server key
-  openssl req -new -sha256 -nodes -out "${OUTPATH}${FILENAME}.csr" -newkey rsa:2048 -keyout "${OUTPATH}${FILENAME}.key" -config <( cat "${tmp}/tmp.csr.cnf" )
+  openssl req -new -nodes -key "${OUTPATH}/${FILENAME}.key" -out "${OUTPATH}/${FILENAME}.csr" -config "${tmp}/tmp.csr.cnf"
 
   # Server certificate
-  openssl x509 -req -in "${OUTPATH}${FILENAME}.csr" -CA "${OUTPATH}${FILENAME}_CA.pem" -CAkey "${tmp}/tmp.key" -CAcreateserial -out "${OUTPATH}${FILENAME}.crt" -days "${DURATION}" -sha256 -extfile "${tmp}/v3.ext"
+  openssl x509 -req -in "${OUTPATH}/${FILENAME}.csr" -CA "${OUTPATH}/${FILENAME}_CA.cert" -CAkey "${tmp}/tmp.key" -CAcreateserial -out "${OUTPATH}/${FILENAME}.pem" -days 365 -sha256 -extfile "${tmp}/tmp.csr.cnf" -extensions req_ext
+
+  # Verify your certificate is correct
+  openssl x509 -in "${OUTPATH}/${FILENAME}.pem" -text -noout
 }
 
 checkVariables
