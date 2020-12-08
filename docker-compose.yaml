@@ -1,0 +1,9 @@
+version: "3.7"
+services:
+  tls-gen:
+    build:
+      dockerfile: Dockerfile
+      context: .
+    env_file: .env
+    volumes:
+      - ${OUTPUT_DIR}:/opt/sert/data
